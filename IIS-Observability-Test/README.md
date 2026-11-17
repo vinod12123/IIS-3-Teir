@@ -1,4 +1,71 @@
-# IIS Observability Test v3 — Windows 11
+# IIS three-tier observability test
+
+This standalone lab has three running tiers:
+
+```text
+Browser → IIS static React frontend → IIS reverse proxy → FastAPI (127.0.0.1:8008) → PostgreSQL
+```
+
+The React UI provides buttons for healthy requests, API 500 errors, a real Python exception, slow API requests, a simulated upstream 503, real database reads and writes, a bounded slow PostgreSQL query, and a real PostgreSQL query error. It also has bounded 8-request API and database error bursts. The API writes JSON lines to `backend/logs/app.jsonl`; IIS writes its normal W3C access log. This is a test application, not a production service.
+
+## Run locally for development
+
+1. Copy `.env.example` to `.env` and replace `replace-me` with a private test password. `.env` is ignored by Git. Use a **dedicated** test database.
+2. Start PostgreSQL with Docker, or install PostgreSQL separately and adjust `DATABASE_URL` in `.env`:
+
+   ```powershell
+   docker compose --env-file .env -f database\compose.yml up -d
+   ```
+
+3. Install and start the API from this directory:
+
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+   .\.venv\Scripts\python.exe -m uvicorn app:app --app-dir backend --host 127.0.0.1 --port 8008
+   ```
+
+4. In another terminal, start the React development server:
+
+   ```powershell
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+Open `http://localhost:5173/`. Vite proxies `/api` to FastAPI during development. The API remains running in its terminal; for a persistent IIS deployment, run it under a supervised Windows service.
+
+## Deploy the React frontend under IIS
+
+1. On the Windows test machine, install IIS **Static Content**, **URL Rewrite**, and **Application Request Routing (ARR)**. Enable proxy mode in ARR at the IIS server level. IIS needs the reverse proxy rule to forward `/api/*` to FastAPI on `127.0.0.1:8008`.
+2. Start PostgreSQL and the API as above on the same test machine. Confirm `http://127.0.0.1:8008/api/health` reports `"api":"ok"` and `"database":"ok"`.
+3. Build and copy the frontend. Adjust the IIS folder if your site uses a different path:
+
+   ```powershell
+   cd frontend
+   npm install
+   npm run build
+   cd ..
+   robocopy frontend\dist C:\inetpub\wwwroot\IIS-Observability-Test /E /R:2 /W:1
+   Copy-Item iis\web.config C:\inetpub\wwwroot\IIS-Observability-Test\web.config -Force
+   ```
+
+4. Open `http://localhost/IIS-Observability-Test/` and check the three health cards. The API and database should both read **ok**. The React files are static; Classic ASP is not required for this new UI.
+
+For a Git-based update on the other machine, clone this **standalone** application outside the IIS web root, pull updates there, rebuild `frontend`, then copy only `frontend/dist` and `iis/web.config` into the IIS site. Never deploy `.git`, `.env`, `backend`, or `database` into the web root. Updating API code also requires restarting its Windows service. No part of this application belongs in the ASTRA `Observability` repository.
+
+## What to expect in ASTRA
+
+- Collect the IIS W3C logs from the test site **and** `backend/logs/app.jsonl` from the installed Windows agent. Give `NT SERVICE\observe-agent` read access to both locations. The API file log contains `level: ERROR` on 500/503 responses and includes a request ID for correlation.
+- Run **30 healthy requests**, then **8 API errors** or **8 database errors**. Verify the responses in this page, then look for matching entries in ASTRA **Observability → Logs** and **Errors**, followed by the host's **Error spike** monitor. Automatic incident creation still requires a critical check and **Open an incident for every critical alert** in the remediation settings.
+- **Read database** and **Write database** exercise a real PostgreSQL connection. **Database query error** sends a query to a deliberately nonexistent table; it does not change schema or stop PostgreSQL. **Slow database query** uses a bounded two-second `pg_sleep`.
+- To test a real database outage, stop only this test database from its own service/Compose stack, refresh the page, and then restore it. The database health card should change to **unavailable** while the API stays up.
+
+## Legacy Classic ASP test
+
+The root `index.html`, `api.asp`, `health.asp`, and `Generate-Traffic.ps1` are retained for the earlier Classic ASP scenarios. They are separate from the React/FastAPI/PostgreSQL application above. The instructions below apply only when deploying those legacy files.
+
+## Legacy setup — Windows 11
 
 A small **HTML + Classic ASP** app for testing real HTTP 200/400/404/500 codes, ~2-second latency, HTTP access logs, and request rates in Windows IIS. No external packages. Intended for a local test machine, **not a production/public server**.
 
