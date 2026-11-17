@@ -8,6 +8,20 @@ Browser → IIS static React frontend → IIS reverse proxy → FastAPI (127.0.0
 
 The React UI provides buttons for healthy requests, API 500 errors, a real Python exception, slow API requests, a simulated upstream 503, real database reads and writes, a bounded slow PostgreSQL query, and a real PostgreSQL query error. It also has bounded 8-request API and database error bursts. The API writes JSON lines to `backend/logs/app.jsonl`; IIS writes its normal W3C access log. This is a test application, not a production service.
 
+## One-command setup on the Windows IIS test machine
+
+The Git repository contains this `IIS-Observability-Test` folder. After cloning the repository outside the IIS web root, install Python 3, Node.js, Docker Desktop, IIS Static Content, URL Rewrite, and Application Request Routing (ARR). In IIS Manager, enable ARR proxy mode at the server level once.
+
+From an **Administrator Command Prompt** in the cloned repository root, run:
+
+```bat
+start-test-app.bat
+```
+
+On the first run, the script creates `IIS-Observability-Test\.env` and stops. Edit that file so `POSTGRES_PASSWORD` and the password in `DATABASE_URL` are the same private test password; then run the script again. It starts PostgreSQL, installs API and frontend dependencies, builds the React frontend, copies only the built frontend and `web.config` into `C:\inetpub\wwwroot\IIS-Observability-Test`, and opens the API in a separate Command Prompt. Keep that API window open while testing. Visit `http://localhost/IIS-Observability-Test/` and check that API and database health both say `ok`.
+
+For later source updates, close the existing API window, run `git pull` in the cloned repository, and rerun `start-test-app.bat`. The script does not install IIS modules or register the API as a Windows service; it is intended for an attended test machine.
+
 ## Run locally for development
 
 1. Copy `.env.example` to `.env` and replace `replace-me` with a private test password. `.env` is ignored by Git. Use a **dedicated** test database.
