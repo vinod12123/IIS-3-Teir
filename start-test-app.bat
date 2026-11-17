@@ -1,6 +1,19 @@
 @echo off
 setlocal
 
+call :main
+set "RESULT=%errorlevel%"
+echo.
+if "%RESULT%"=="0" (
+  echo Script finished. Review the messages above, then press any key to close this window.
+) else (
+  echo Setup did not finish. Read the error above, then press any key to close this window.
+)
+pause >nul
+exit /b %RESULT%
+
+:main
+
 set "APP_DIR=%~dp0IIS-Observability-Test"
 set "SITE_DIR=C:\inetpub\wwwroot\IIS-Observability-Test"
 
