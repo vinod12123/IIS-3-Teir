@@ -1,6 +1,10 @@
 """Loopback-only controls for real outages in the dedicated IIS test lab."""
 
 import asyncio
+import base64
+import binascii
+import hmac
+import os
 import shutil
 import socket
 import subprocess
@@ -15,9 +19,11 @@ from urllib.request import urlopen
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from dotenv import load_dotenv
 
 
 ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(ROOT / ".env")
 SITE = Path(r"C:\inetpub\wwwroot\IIS-Observability-Test")
 INDEX = SITE / "index.html"
 DISABLED_INDEX = SITE / "index.html.lab-disabled"
@@ -237,6 +243,23 @@ app = FastAPI(title="IIS test lab controller", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=sorted(ORIGINS), allow_methods=["GET", "POST"], allow_headers=["X-Lab-Control"])
 
 
+def require_remote_auth(request: Request):
+    """The IIS proxy is the only remote entry point; its actions require Basic auth."""
+    username = os.environ.get("LAB_CONTROL_USER")
+    password = os.environ.get("LAB_CONTROL_PASSWORD")
+    if not username or not password or password == "replace-me":
+        raise HTTPException(status_code=503, detail="Set LAB_CONTROL_USER and LAB_CONTROL_PASSWORD in the test server .env")
+    header = request.headers.get("authorization", "")
+    try:
+        scheme, encoded = header.split(" ", 1)
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+        supplied_user, supplied_password = decoded.split(":", 1)
+    except (ValueError, UnicodeError, binascii.Error):
+        scheme, supplied_user, supplied_password = "", "", ""
+    if scheme.lower() != "basic" or not (hmac.compare_digest(supplied_user, username) & hmac.compare_digest(supplied_password, password)):
+        raise HTTPException(status_code=401, detail="Invalid lab controller credentials", headers={"WWW-Authenticate": 'Basic realm="IIS test lab"'})
+
+
 @app.get("/")
 def control_page():
     return FileResponse(Path(__file__).with_name("control.html"))
@@ -247,10 +270,33 @@ async def status():
     return await asyncio.to_thread(controller.status)
 
 
+@app.get("/remote/recovery")
+def remote_recovery():
+    return FileResponse(Path(__file__).with_name("control.html"))
+
+
+@app.get("/remote/status")
+async def remote_status(request: Request):
+    require_remote_auth(request)
+    return await asyncio.to_thread(controller.status)
+
+
 @app.post("/control/{tier}/{action}")
 async def change_state(tier: str, action: str, request: Request, x_lab_control: str | None = Header(default=None)):
     if request.headers.get("origin") not in (None, *ORIGINS) or x_lab_control != "local-lab":
         raise HTTPException(status_code=403, detail="Local test-lab request required")
+    return await perform_change(tier, action)
+
+
+@app.post("/remote/{tier}/{action}")
+async def remote_change_state(tier: str, action: str, request: Request):
+    require_remote_auth(request)
+    if request.headers.get("x-lab-control") != "remote-lab":
+        raise HTTPException(status_code=403, detail="Remote lab control header required")
+    return await perform_change(tier, action)
+
+
+async def perform_change(tier: str, action: str):
     operations = {
         ("api", "stop"): controller.stop_api,
         ("api", "restore"): controller.start_api,

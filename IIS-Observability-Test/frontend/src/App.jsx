@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 
 const api = (path) => new URL(`api/${path}`, document.baseURI);
-const controller = (path) => `http://127.0.0.1:8010/control/${path}`;
+const controller = (path) => new URL(`lab-control/${path}`, document.baseURI);
+const recovery = new URL('lab-control/recovery', document.baseURI);
+const authorization = (credentials) => `Basic ${btoa(`${credentials.username}:${credentials.password}`)}`;
 const money = (amount) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const blank = { sku: '', name: '', category: 'Devices', quantity: 0, reorder_level: 5, unit_price: 0 };
@@ -46,14 +48,18 @@ function Products({ products, error, refresh, save, remove, saving }) {
   </>;
 }
 
-function Simulation({ state, controlBusy, controlMessage, change, run, series, busy, cancel, progress, activity, events, health }) {
+function Simulation({ state, credentials, login, logout, loginError, controlBusy, controlMessage, change, run, series, busy, cancel, progress, activity, events, health }) {
   const [group, setGroup] = useState('All simulations');
+  const [username, setUsername] = useState('admin');
+  const [password, setPassword] = useState('');
   const selected = outages.filter((item) => group === 'All simulations' || item.group === group);
   const active = (item) => item.id === 'cpu' || item.id === 'disk' ? state?.[item.id] === 'running' : state?.[item.id === 'route' ? 'route' : item.id] === 'stopped';
   return <>
-    <div className="page-heading"><div><h1>Simulation</h1><p>Break one part of the test system on purpose to check monitoring and recovery.</p></div><a className="subtle recovery" href="http://127.0.0.1:8010/" target="_blank" rel="noreferrer">Open recovery page ↗</a></div>
-    <div className="banner warning"><div><strong>These simulations are real.</strong><span>Each one changes a component on this test machine. Stops ask for confirmation. The independent recovery page remains at 127.0.0.1:8010.</span></div></div>
-    {!state && <div className="banner error">Local controller unavailable. Keep the IIS Test Controller window running.</div>}
+    <div className="page-heading"><div><h1>Simulation</h1><p>Break one part of the test system on purpose to check monitoring and recovery.</p></div><a className="subtle recovery" href={recovery.href} target="_blank" rel="noreferrer">Open recovery page ↗</a></div>
+    <div className="banner warning"><div><strong>These simulations are real.</strong><span>Each one changes a component on the IIS test machine. Stops ask for confirmation. The independent recovery page is available through this same IIS site.</span></div></div>
+    {!credentials && <form className="card control-login" onSubmit={async (event) => { event.preventDefault(); if (await login({ username, password })) setPassword(''); }}><div><h2>Unlock simulation controls</h2><p>Enter the test server controller credentials. They stay in this browser tab only.</p></div><label>Username<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></label><label>Password<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label><button>Unlock</button>{loginError && <span role="alert" className="bad">{loginError}</span>}</form>}
+    {credentials && <div className="unlock-row"><span>Simulation controls unlocked for {credentials.username}.</span><button className="text-button" onClick={logout}>Lock controls</button></div>}
+    {credentials && !state && <div className="banner error">Controller unavailable. Check the IIS Test Controller window and the remote control route.</div>}
     <div className="filter"><label htmlFor="filter">Scenario</label><select id="filter" value={group} onChange={(event) => setGroup(event.target.value)}><option>All simulations</option><option>Availability</option><option>Networking</option><option>Utilization</option></select><span>{selected.length + (group === 'All simulations' || group === 'Availability' ? 1 : 0)} shown</span></div>
     {['Availability', 'Networking', 'Utilization'].map((category) => { const items = selected.filter((item) => item.group === category); return items.length > 0 && <section className="sim-group" key={category}><h2>{category}</h2><div className="sim-grid">{items.map((item) => <article className="sim-card" key={item.id}><div className="sim-head"><span className="sim-icon">{item.id === 'database' ? '▤' : item.id === 'route' ? '⌁' : item.id === 'cpu' ? '◉' : item.id === 'disk' ? '▣' : '◇'}</span><div><h3>{item.title}</h3><small>{item.target}</small></div><span className={`sim-state ${active(item) ? 'active' : ''}`}>{!state ? 'Unknown' : active(item) ? 'Simulating' : 'Normal'}</span></div><ul>{item.effects.map((effect) => <li key={effect}>{effect}</li>)}</ul><p className="signal"><b>ASTRA should notice:</b> {item.signal}</p><div className="button-row"><button className="danger" disabled={!state || controlBusy || active(item)} onClick={() => change(item.id, 'stop')}>Run simulation</button><button className="subtle" disabled={!state || controlBusy || !active(item)} onClick={() => change(item.id, 'restore')}>Restore</button></div>{item.id === 'frontend' && <small>Once this page disappears, restore it from the recovery page.</small>}</article>)}</div></section>; })}
     {(group === 'All simulations' || group === 'Availability') && <section className="sim-group"><h2>Application errors</h2><div className="sim-grid"><article className="sim-card"><div className="sim-head"><span className="sim-icon">!</span><div><h3>Real API exception</h3><small>Python endpoint</small></div></div><ul><li>Raises an actual Python exception</li><li>Returns HTTP 500 and writes an API error log</li><li>The API process stays running</li></ul><p className="signal"><b>ASTRA should notice:</b> API error rate or collected application logs.</p><button className="danger" disabled={busy} onClick={() => run('api-exception')}>Run simulation</button></article></div></section>}
@@ -72,6 +78,8 @@ export default function App() {
   const [events, setEvents] = useState([]);
   const [activity, setActivity] = useState([]);
   const [state, setState] = useState(null);
+  const [credentials, setCredentials] = useState(null);
+  const [loginError, setLoginError] = useState('');
   const [controlBusy, setControlBusy] = useState(false);
   const [controlMessage, setControlMessage] = useState('');
   const [busy, setBusy] = useState(false);
@@ -85,13 +93,19 @@ export default function App() {
     try { const response = await fetch(api('products'), { cache: 'no-store' }); const body = await response.json(); if (!response.ok) throw new Error(body.message || `HTTP ${response.status}`); setProducts(body.products || []); setProductError(''); } catch (error) { setProducts([]); setProductError(`The API or PostgreSQL could not load products. ${error.message || String(error)}`); }
     try { const response = await fetch(api('events'), { cache: 'no-store' }); if (response.ok) setEvents((await response.json()).events || []); } catch { /* The last write list remains visible during an outage. */ }
   }, []);
-  const refreshState = useCallback(async () => { try { const response = await fetch(controller('status'), { cache: 'no-store' }); if (!response.ok) throw new Error(); setState(await response.json()); } catch { setState(null); } }, []);
+  const refreshState = useCallback(async () => { if (!credentials) { setState(null); return; } try { const response = await fetch(controller('status'), { cache: 'no-store', headers: { Authorization: authorization(credentials) } }); if (response.status === 401) { setCredentials(null); setLoginError('Controller login expired or credentials changed.'); setState(null); return; } if (!response.ok) throw new Error(); setState(await response.json()); } catch { setState(null); } }, [credentials]);
   useEffect(() => { void refresh(); void refreshState(); const timer = setInterval(() => { void refresh(); void refreshState(); }, 10000); return () => clearInterval(timer); }, [refresh, refreshState]);
 
+  async function login(attempt) {
+    setLoginError('');
+    try { const response = await fetch(controller('status'), { cache: 'no-store', headers: { Authorization: authorization(attempt) } }); if (!response.ok) { setLoginError(response.status === 401 ? 'Incorrect username or password.' : `Controller returned HTTP ${response.status}. Check the server .env and IIS route.`); return false; } setState(await response.json()); setCredentials(attempt); return true; } catch { setLoginError('Could not reach the controller through IIS. Check the controller window and URL Rewrite.'); return false; }
+  }
+
   async function change(tier, action) {
-    if (action === 'stop' && !confirm(`Run the ${tier} simulation on this test machine? Recovery: http://127.0.0.1:8010/`)) return;
+    if (!credentials) return;
+    if (action === 'stop' && !confirm(`Run the ${tier} simulation on the IIS test machine? Recovery: ${recovery.href}`)) return;
     setControlBusy(true); setControlMessage(`${action === 'stop' ? 'Starting' : 'Restoring'} ${tier}…`);
-    try { const response = await fetch(controller(`${tier}/${action}`), { method: 'POST', headers: { 'X-Lab-Control': 'local-lab' } }); const body = await response.json(); setControlMessage(response.ok ? `${tier} ${action === 'stop' ? 'simulation started' : 'restored'}.` : (body.detail || `HTTP ${response.status}`)); } catch (error) { setControlMessage(`Controller unavailable: ${String(error)}`); } finally { setControlBusy(false); void refreshState(); void refresh(); }
+    try { const response = await fetch(controller(`${tier}/${action}`), { method: 'POST', headers: { Authorization: authorization(credentials), 'X-Lab-Control': 'remote-lab' } }); const body = await response.json(); if (response.status === 401) { setCredentials(null); setLoginError('Incorrect controller credentials.'); } setControlMessage(response.ok ? `${tier} ${action === 'stop' ? 'simulation started' : 'restored'}.` : (body.detail || `HTTP ${response.status}`)); } catch (error) { setControlMessage(`Controller unavailable: ${String(error)}`); } finally { setControlBusy(false); void refreshState(); void refresh(); }
   }
   async function save(id, product) {
     setSaving(true);
@@ -108,5 +122,5 @@ export default function App() {
   }
   async function series(id, total, gap) { if (busy) return; cancelled.current = false; setBusy(true); try { for (let i = 1; i <= total && !cancelled.current; i++) { await run(id); setProgress(`${id}: ${i}/${total} requests sent`); if (i < total && !cancelled.current) await pause(gap); } if (cancelled.current) setProgress(`${id}: stopped`); } finally { setBusy(false); void refresh(); } }
 
-  return <div className="shell"><aside className="sidebar"><a className="brand" href="#/products"><span className="brand-icon">◇</span><span><strong>Stockroom</strong><small>IIS test inventory</small></span></a><nav><a className={page === 'products' ? 'selected' : ''} href="#/products">◇ <span>Products</span></a><a className={page === 'simulation' ? 'selected' : ''} href="#/simulation">♧ <span>Simulation</span></a></nav><div className="sidebar-foot"><small>LOCAL WINDOWS TEST LAB</small><strong>React · Python · PostgreSQL</strong><span>Real component failures, scoped to this app.</span></div></aside><main className="workspace"><div className="topbar"><span>IIS three-tier test lab / {page === 'products' ? 'Products' : 'Simulation'}</span><div className="pills"><Pill name="Frontend" status={state?.frontend || 'unknown'} /><Pill name="API" status={health?.api || 'unknown'} /><Pill name="PostgreSQL" status={health?.database || 'unknown'} /></div></div>{page === 'products' ? <Products products={products} error={productError} refresh={refresh} save={save} remove={remove} saving={saving} /> : <Simulation state={state} controlBusy={controlBusy} controlMessage={controlMessage} change={change} run={run} series={series} busy={busy} cancel={() => { cancelled.current = true; }} progress={progress} activity={activity} events={events} health={health} />}<footer>Dedicated test machine only. Recovery: <a href="http://127.0.0.1:8010/">127.0.0.1:8010</a>. ASTRA alerts require configured collection and monitors.</footer></main></div>;
+  return <div className="shell"><aside className="sidebar"><a className="brand" href="#/products"><span className="brand-icon">◇</span><span><strong>Stockroom</strong><small>IIS test inventory</small></span></a><nav><a className={page === 'products' ? 'selected' : ''} href="#/products">◇ <span>Products</span></a><a className={page === 'simulation' ? 'selected' : ''} href="#/simulation">♧ <span>Simulation</span></a></nav><div className="sidebar-foot"><small>LOCAL WINDOWS TEST LAB</small><strong>React · Python · PostgreSQL</strong><span>Real component failures, scoped to this app.</span></div></aside><main className="workspace"><div className="topbar"><span>IIS three-tier test lab / {page === 'products' ? 'Products' : 'Simulation'}</span><div className="pills"><Pill name="Frontend" status={state?.frontend || 'unknown'} /><Pill name="API" status={health?.api || 'unknown'} /><Pill name="PostgreSQL" status={health?.database || 'unknown'} /></div></div>{page === 'products' ? <Products products={products} error={productError} refresh={refresh} save={save} remove={remove} saving={saving} /> : <Simulation state={state} credentials={credentials} login={login} logout={() => { setCredentials(null); setState(null); }} loginError={loginError} controlBusy={controlBusy} controlMessage={controlMessage} change={change} run={run} series={series} busy={busy} cancel={() => { cancelled.current = true; }} progress={progress} activity={activity} events={events} health={health} />}<footer>Dedicated test machine only. Recovery: <a href={recovery.href}>{recovery.href}</a>. ASTRA alerts require configured collection and monitors.</footer></main></div>;
 }

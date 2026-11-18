@@ -69,12 +69,23 @@ if not exist ".env" (
   copy /Y ".env.example" ".env" >nul
   echo Created %APP_DIR%\.env
   echo Edit POSTGRES_PASSWORD and the password in DATABASE_URL to the same private test password.
+  echo Also set LAB_CONTROL_USER and LAB_CONTROL_PASSWORD for remote simulation controls.
   echo Then run this file again.
   exit /b 0
 )
 findstr /C:"replace-me" ".env" >nul 2>&1
 if not errorlevel 1 (
-  echo ERROR: Set a private test password in .env before starting the app.
+  echo ERROR: Set private database and LAB_CONTROL_PASSWORD values in .env before starting the app.
+  exit /b 1
+)
+findstr /B /C:"LAB_CONTROL_USER=" ".env" >nul 2>&1
+if errorlevel 1 (
+  echo ERROR: Add LAB_CONTROL_USER=admin to .env.
+  exit /b 1
+)
+findstr /R /B /C:"LAB_CONTROL_PASSWORD=." ".env" >nul 2>&1
+if errorlevel 1 (
+  echo ERROR: Add LAB_CONTROL_PASSWORD to .env using the private test password.
   exit /b 1
 )
 
@@ -124,6 +135,7 @@ if errorlevel 1 goto :failed
 echo.
 echo Open http://localhost/IIS-Observability-Test/
 echo Recovery controls: http://127.0.0.1:8010/
+echo Remote recovery page: http://localhost/IIS-Observability-Test/lab-control/recovery
 echo Keep the IIS Test Controller window open while testing.
 echo IIS requires URL Rewrite and ARR proxy mode for the API route.
 exit /b 0

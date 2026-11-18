@@ -5,21 +5,35 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>IIS test lab recovery</title>
   <style>
-    body{font:16px Segoe UI,Arial,sans-serif;background:#0c1424;color:#e8efff;max-width:760px;margin:40px auto;padding:0 20px}h1{font-size:28px}section{background:#17243b;border:1px solid #314463;border-radius:12px;padding:18px;margin:14px 0}button{border:0;border-radius:7px;background:#4b83f0;color:#fff;padding:10px 14px;margin:8px 8px 0 0;cursor:pointer}.stop{background:#a73d56}.muted{color:#a8bad4}a{color:#9fc4ff}#message{min-height:24px}
+    body{font:16px Segoe UI,Arial,sans-serif;background:#0c1424;color:#e8efff;max-width:760px;margin:40px auto;padding:0 20px}h1{font-size:28px}section{background:#17243b;border:1px solid #314463;border-radius:12px;padding:18px;margin:14px 0}button{border:0;border-radius:7px;background:#4b83f0;color:#fff;padding:10px 14px;margin:8px 8px 0 0;cursor:pointer}.stop{background:#a73d56}.muted{color:#a8bad4}a{color:#9fc4ff}#message{min-height:24px}input{padding:9px;margin:8px 8px 8px 0;max-width:100%;border-radius:6px;border:1px solid #7183a0}#login{display:none}
   </style>
 </head>
 <body>
   <h1>IIS test lab recovery</h1>
   <p class="muted">This page remains available when the test frontend or API is stopped. It controls only this lab's API process, PostgreSQL container, IIS frontend and route, and bounded CPU or disk load.</p>
-  <p><a href="http://localhost/IIS-Observability-Test/">Open test application</a></p>
+  <p><a href="/IIS-Observability-Test/">Open test application</a></p>
+  <form id="login"><label>Username <input id="username" autocomplete="username" value="admin" required></label><label>Password <input id="password" type="password" autocomplete="current-password" required></label><button>Unlock controls</button></form>
   <p id="message" role="status"></p>
   <div id="tiers"></div>
   <script>
     const names = {frontend:'IIS frontend',api:'Python API',database:'PostgreSQL container',route:'IIS API route',cpu:'CPU load',disk:'Disk load'};
     const tiers = document.getElementById('tiers');
+    const remote = location.pathname.includes('/lab-control/');
+    const prefix = remote ? '/IIS-Observability-Test/lab-control' : '/control';
+    let authorization = '';
+    document.getElementById('login').style.display=remote?'block':'none';
+    document.getElementById('login').onsubmit=(event)=>{
+      event.preventDefault();
+      authorization='Basic '+btoa(document.getElementById('username').value+':'+document.getElementById('password').value);
+      document.getElementById('password').value='';
+      refresh();
+    };
     async function refresh(){
+      if(remote&&!authorization){tiers.replaceChildren();return;}
       try {
-        const response = await fetch('/control/status', {cache:'no-store'});
+        const response = await fetch(`${prefix}/status`, {cache:'no-store',headers:remote?{Authorization:authorization}:{}});
+        if(response.status===401){authorization='';tiers.replaceChildren();throw new Error('Incorrect controller username or password.');}
+        if(!response.ok)throw new Error(`Controller returned HTTP ${response.status}`);
         const state = await response.json();
         tiers.replaceChildren();
         for (const [tier,name] of Object.entries(names)) {
@@ -45,7 +59,7 @@
       const message=document.getElementById('message');
       message.textContent=`${action} ${names[tier]}...`;
       try{
-        const response=await fetch(`/control/${tier}/${action}`,{method:'POST',headers:{'X-Lab-Control':'local-lab'}});
+        const response=await fetch(`${prefix}/${tier}/${action}`,{method:'POST',headers:remote?{Authorization:authorization,'X-Lab-Control':'remote-lab'}:{'X-Lab-Control':'local-lab'}});
         const body=await response.json();
         message.textContent=response.ok?`${names[tier]} ${action} completed.`:(body.detail||`HTTP ${response.status}`);
       }catch(error){message.textContent=String(error);}

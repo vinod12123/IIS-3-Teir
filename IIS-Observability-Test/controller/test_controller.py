@@ -1,10 +1,11 @@
 """Safety checks for the local outage controller; no IIS or Docker required."""
 
 import importlib.util
+import base64
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi import HTTPException, Request
 
@@ -105,6 +106,44 @@ class LabControllerTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as result:
             lab.change_state("database", "stop", request, "local-lab").send(None)
         self.assertEqual(result.exception.status_code, 403)
+
+    def test_remote_control_requires_correct_basic_credentials(self):
+        def request(authorization=None):
+            headers = [] if authorization is None else [(b"authorization", authorization.encode("ascii"))]
+            return Request({"type": "http", "headers": headers})
+
+        with patch.dict(lab.os.environ, {"LAB_CONTROL_USER": "admin", "LAB_CONTROL_PASSWORD": "private-test-value"}):
+            with self.assertRaises(HTTPException) as missing:
+                lab.require_remote_auth(request())
+            self.assertEqual(missing.exception.status_code, 401)
+            wrong = "Basic " + base64.b64encode(b"admin:wrong").decode("ascii")
+            with self.assertRaises(HTTPException) as invalid:
+                lab.require_remote_auth(request(wrong))
+            self.assertEqual(invalid.exception.status_code, 401)
+            valid = "Basic " + base64.b64encode(b"admin:private-test-value").decode("ascii")
+            self.assertIsNone(lab.require_remote_auth(request(valid)))
+
+    def test_remote_control_fails_closed_without_server_secret(self):
+        with patch.dict(lab.os.environ, {"LAB_CONTROL_USER": "admin", "LAB_CONTROL_PASSWORD": "replace-me"}):
+            with self.assertRaises(HTTPException) as result:
+                lab.require_remote_auth(Request({"type": "http", "headers": []}))
+            self.assertEqual(result.exception.status_code, 503)
+
+    def test_remote_mutation_requires_custom_header_after_auth(self):
+        auth = "Basic " + base64.b64encode(b"admin:private-test-value").decode("ascii")
+        missing = Request({"type": "http", "headers": [(b"authorization", auth.encode("ascii"))]})
+        allowed = Request({"type": "http", "headers": [
+            (b"authorization", auth.encode("ascii")), (b"x-lab-control", b"remote-lab")
+        ]})
+        with patch.dict(lab.os.environ, {"LAB_CONTROL_USER": "admin", "LAB_CONTROL_PASSWORD": "private-test-value"}), \
+             patch.object(lab, "perform_change", new_callable=AsyncMock) as operation:
+            with self.assertRaises(HTTPException) as denied:
+                lab.remote_change_state("api", "stop", missing).send(None)
+            self.assertEqual(denied.exception.status_code, 403)
+            operation.assert_not_called()
+            with self.assertRaises(StopIteration):
+                lab.remote_change_state("api", "stop", allowed).send(None)
+            operation.assert_awaited_once_with("api", "stop")
 
 
 if __name__ == "__main__":
