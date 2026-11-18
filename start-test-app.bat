@@ -78,6 +78,12 @@ if not errorlevel 1 (
   exit /b 1
 )
 
+powershell -NoProfile -Command "if (Get-NetTCPConnection -State Listen -LocalPort 8008,8010 -ErrorAction SilentlyContinue) { exit 1 }"
+if errorlevel 1 (
+  echo ERROR: Port 8008 or 8010 is already in use. Close the old API or controller window first.
+  exit /b 1
+)
+
 echo Starting the test database...
 docker compose --env-file ".env" -f "database\compose.yml" up -d
 if errorlevel 1 goto :failed
@@ -111,13 +117,14 @@ if errorlevel 8 goto :failed
 copy /Y "iis\web.config" "%SITE_DIR%\web.config" >nul
 if errorlevel 1 goto :failed
 
-echo Starting the API in a separate window...
-start "IIS Test API" /D "%APP_DIR%" cmd /k ".venv\Scripts\python.exe -m uvicorn app:app --app-dir backend --host 127.0.0.1 --port 8008"
+echo Starting the local controller and API in a separate window...
+start "IIS Test Controller" /D "%APP_DIR%" cmd /k ".venv\Scripts\python.exe -m uvicorn app:app --app-dir controller --host 127.0.0.1 --port 8010"
 if errorlevel 1 goto :failed
 
 echo.
 echo Open http://localhost/IIS-Observability-Test/
-echo Keep the IIS Test API window open while testing.
+echo Recovery controls: http://127.0.0.1:8010/
+echo Keep the IIS Test Controller window open while testing.
 echo IIS requires URL Rewrite and ARR proxy mode for the API route.
 exit /b 0
 

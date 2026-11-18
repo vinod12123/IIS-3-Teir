@@ -6,7 +6,7 @@ This standalone lab has three running tiers:
 Browser → IIS static React frontend → IIS reverse proxy → FastAPI (127.0.0.1:8008) → PostgreSQL
 ```
 
-The React UI provides buttons for healthy requests, API 500 errors, a real Python exception, slow API requests, a simulated upstream 503, real database reads and writes, a bounded slow PostgreSQL query, and a real PostgreSQL query error. It also has bounded 8-request API and database error bursts. The API writes JSON lines to `backend/logs/app.jsonl`; IIS writes its normal W3C access log. This is a test application, not a production service.
+The React UI now has a Products page and a Simulation page. Products are real PostgreSQL rows with add, edit, delete, stock counts, and inventory value. The Simulation page shows tier status, real outage controls, request scenarios, and bounded 8-request error bursts. The API writes JSON lines to `backend/logs/app.jsonl`; IIS writes its normal W3C access log. This is a test application, not a production service.
 
 ## One-command setup on the Windows IIS test machine
 
@@ -18,9 +18,26 @@ From an **Administrator Command Prompt** in the cloned repository root, run:
 start-test-app.bat
 ```
 
-On the first run, the script creates `IIS-Observability-Test\.env` and stops. Edit that file so `POSTGRES_PASSWORD` and the password in `DATABASE_URL` are the same private test password; then run the script again. It starts PostgreSQL, installs API and frontend dependencies, builds the React frontend, copies only the built frontend and `web.config` into `C:\inetpub\wwwroot\IIS-Observability-Test`, and opens the API in a separate Command Prompt. Keep that API window open while testing. Visit `http://localhost/IIS-Observability-Test/` and check that API and database health both say `ok`.
+On the first run, the script creates `IIS-Observability-Test\.env` and stops. Edit that file so `POSTGRES_PASSWORD` and the password in `DATABASE_URL` are the same private test password; then run the script again. It starts PostgreSQL, installs API and frontend dependencies, builds the React frontend, copies only the built frontend and `web.config` into `C:\inetpub\wwwroot\IIS-Observability-Test`, and opens the local controller in a separate Command Prompt. The controller starts and supervises the API. Keep that controller window open while testing. Visit `http://localhost/IIS-Observability-Test/` and check that API and database health both say `ok`.
 
-For later source updates, close the existing API window, run `git pull` in the cloned repository, and rerun `start-test-app.bat`. The script does not install IIS modules or register the API as a Windows service; it is intended for an attended test machine.
+For later source updates, close the existing controller window (and any API window left from an older version), run `git pull` in the cloned repository, and rerun `start-test-app.bat`. The script does not install IIS modules or register the API as a Windows service; it is intended for an attended test machine.
+
+### Real outage controls
+
+Open the application **on the Windows test machine**. Its outage panel uses a controller bound only to `127.0.0.1:8010`:
+
+- **Stop API** terminates only the Python API process launched by the controller. **Restore API** launches it again.
+- **Stop database** stops only this Compose stack's `postgres` container. **Restore database** starts that container; its Docker volume retains the test records. Docker Desktop itself stays running so restoration remains possible.
+- **Stop frontend** removes this app's deployed `index.html` from IIS until restored. It does not stop the Default Web Site or other IIS applications. The loaded browser tab can still use its restore button; a fresh page load will fail while the frontend is stopped.
+- **API route unavailable** temporarily changes this app's IIS `web.config` proxy target to an unused loopback port. Restore puts its saved config back. This does not add a firewall rule or change other sites.
+- **CPU pressure** starts one bounded Python worker for at most 60 seconds. **Disk usage increase** writes a removable 128 MB file only when at least 2 GB is free. Restore stops the worker or removes the file.
+- **Real API exception** sends a request that raises a Python exception and records an API error without stopping the process.
+
+The independent recovery page at `http://127.0.0.1:8010/` remains available if the main page cannot reload. Keep that URL handy before stopping the frontend. Rerunning `start-test-app.bat` also redeploys the frontend and starts the database. The controller binds to the test machine's loopback interface and accepts only named lab operations. The existing **Unhandled exception** and **Database query error** scenarios generate real Python/PostgreSQL failures without stopping a tier.
+
+When PostgreSQL is stopped, `/api/health` returns HTTP 503 with `database: unavailable`. When the API is stopped, IIS records a proxy failure. When the frontend index is stopped, a new page load fails in IIS. These are actual tier outages, so restore the stopped tier from the recovery page after observing it.
+
+The agent's IIS file source (`C:\inetpub\logs\LogFiles\W3SVC1`) captures HTTP statuses. To see Python error details in ASTRA, separately collect `backend\logs\app.jsonl` as an agent file-log source and grant `NT SERVICE\observe-agent` read access to that directory. Tier outages appear in ASTRA only when the corresponding host, service, container, or synthetic monitoring is enabled.
 
 ## Run locally for development
 

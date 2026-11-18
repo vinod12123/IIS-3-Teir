@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IIS test lab recovery</title>
+  <style>
+    body{font:16px Segoe UI,Arial,sans-serif;background:#0c1424;color:#e8efff;max-width:760px;margin:40px auto;padding:0 20px}h1{font-size:28px}section{background:#17243b;border:1px solid #314463;border-radius:12px;padding:18px;margin:14px 0}button{border:0;border-radius:7px;background:#4b83f0;color:#fff;padding:10px 14px;margin:8px 8px 0 0;cursor:pointer}.stop{background:#a73d56}.muted{color:#a8bad4}a{color:#9fc4ff}#message{min-height:24px}
+  </style>
+</head>
+<body>
+  <h1>IIS test lab recovery</h1>
+  <p class="muted">This page remains available when the test frontend or API is stopped. It controls only this lab's API process, PostgreSQL container, IIS frontend and route, and bounded CPU or disk load.</p>
+  <p><a href="http://localhost/IIS-Observability-Test/">Open test application</a></p>
+  <p id="message" role="status"></p>
+  <div id="tiers"></div>
+  <script>
+    const names = {frontend:'IIS frontend',api:'Python API',database:'PostgreSQL container',route:'IIS API route',cpu:'CPU load',disk:'Disk load'};
+    const tiers = document.getElementById('tiers');
+    async function refresh(){
+      try {
+        const response = await fetch('/control/status', {cache:'no-store'});
+        const state = await response.json();
+        tiers.replaceChildren();
+        for (const [tier,name] of Object.entries(names)) {
+          const section=document.createElement('section');
+          const title=document.createElement('strong');
+          title.textContent=`${name}: ${state[tier]}`;
+          section.append(title,document.createElement('br'));
+          for (const action of ['stop','restore']) {
+            const button=document.createElement('button');
+            button.textContent=(tier==='cpu'||tier==='disk')?(action==='stop'?'Start load':'Remove load'):(action==='stop'?'Stop':'Restore');
+            button.className=action==='stop'?'stop':'';
+            const load=tier==='cpu'||tier==='disk';
+            button.disabled=action==='stop'?(load?state[tier]==='running':state[tier]!=='running'):(load?state[tier]!=='running':state[tier]==='running');
+            button.onclick=()=>change(tier,action);
+            section.append(button);
+          }
+          tiers.append(section);
+        }
+      } catch (error) {document.getElementById('message').textContent=String(error);}
+    }
+    async function change(tier,action){
+      if(action==='stop'&&!confirm(`Stop this lab's ${names[tier]}?`))return;
+      const message=document.getElementById('message');
+      message.textContent=`${action} ${names[tier]}...`;
+      try{
+        const response=await fetch(`/control/${tier}/${action}`,{method:'POST',headers:{'X-Lab-Control':'local-lab'}});
+        const body=await response.json();
+        message.textContent=response.ok?`${names[tier]} ${action} completed.`:(body.detail||`HTTP ${response.status}`);
+      }catch(error){message.textContent=String(error);}
+      await refresh();
+    }
+    refresh();setInterval(refresh,10000);
+  </script>
+</body>
+</html>

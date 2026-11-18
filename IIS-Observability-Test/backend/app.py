@@ -14,6 +14,7 @@ import psycopg
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 import database
 
@@ -54,6 +55,23 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="IIS three-tier observability test", lifespan=lifespan)
 
 
+class ProductInput(BaseModel):
+    sku: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9-]+$")
+    name: str = Field(min_length=1, max_length=100)
+    category: str = Field(min_length=1, max_length=50)
+    quantity: int = Field(ge=0, le=1_000_000)
+    reorder_level: int = Field(ge=0, le=1_000_000)
+    unit_price: float = Field(ge=0, le=1_000_000)
+
+
+class ProductUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    category: str = Field(min_length=1, max_length=50)
+    quantity: int = Field(ge=0, le=1_000_000)
+    reorder_level: int = Field(ge=0, le=1_000_000)
+    unit_price: float = Field(ge=0, le=1_000_000)
+
+
 @app.middleware("http")
 async def request_log(request: Request, call_next):
     started = time.perf_counter()
@@ -82,7 +100,7 @@ def health():
         return {"api": "ok", "database": "ok", "eventCount": count}
     except (psycopg.Error, RuntimeError) as error:
         emit("WARNING", "database_health_failed", error=type(error).__name__)
-        return {"api": "ok", "database": "unavailable", "eventCount": None}
+        return JSONResponse(status_code=503, content={"api": "ok", "database": "unavailable", "eventCount": None})
 
 
 @app.get("/api/events")
@@ -92,6 +110,45 @@ def events():
     except (psycopg.Error, RuntimeError) as error:
         emit("ERROR", "database_events_failed", error=type(error).__name__)
         return result("events", 503, "Database unavailable")
+
+
+@app.get("/api/products")
+def products():
+    try:
+        return {"products": database.list_products()}
+    except (psycopg.Error, RuntimeError) as error:
+        emit("ERROR", "product_list_failed", error=type(error).__name__)
+        return result("products", 503, "Inventory database unavailable")
+
+
+@app.post("/api/products", status_code=201)
+def add_product(item: ProductInput):
+    try:
+        return database.create_product(item)
+    except psycopg.errors.UniqueViolation:
+        return result("products", 409, "SKU already exists")
+    except (psycopg.Error, RuntimeError) as error:
+        emit("ERROR", "product_create_failed", error=type(error).__name__)
+        return result("products", 503, "Inventory database unavailable")
+
+
+@app.put("/api/products/{product_id}")
+def edit_product(product_id: int, item: ProductUpdate):
+    try:
+        product = database.update_product(product_id, item)
+        return product if product else result("products", 404, "Product not found")
+    except (psycopg.Error, RuntimeError) as error:
+        emit("ERROR", "product_update_failed", error=type(error).__name__)
+        return result("products", 503, "Inventory database unavailable")
+
+
+@app.delete("/api/products/{product_id}")
+def remove_product(product_id: int):
+    try:
+        return {"deleted": bool(database.delete_product(product_id))}
+    except (psycopg.Error, RuntimeError) as error:
+        emit("ERROR", "product_delete_failed", error=type(error).__name__)
+        return result("products", 503, "Inventory database unavailable")
 
 
 @app.post("/api/scenarios/{scenario}")
