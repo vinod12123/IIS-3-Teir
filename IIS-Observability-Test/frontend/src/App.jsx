@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-
+//import { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 const scenarios = [
   { id: 'healthy', tier: 'API', title: 'Healthy request', detail: 'Normal API response and IIS access log', expected: '200' },
   { id: 'api-error', tier: 'API', title: 'Server error', detail: 'Deliberate HTTP 500', expected: '500' },
